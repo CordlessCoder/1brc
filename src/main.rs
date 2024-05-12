@@ -15,7 +15,7 @@ use std::{
 use hashbrown::HashMap;
 use memmap2::Mmap;
 
-const BUMP_CAP: usize = 1024 * 1024 * 8;
+const BUMP_CAP: usize = 1024 * 1024 * 4;
 const SINGLE_BUMP_MAX: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -26,9 +26,50 @@ struct MeasurementRecord {
     max: i64,
 }
 
-struct AtomicBumpAlloc {
-    len: AtomicUsize,
-    ptr: AtomicPtr<u8>,
+impl Default for BumpAlloc {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            ptr: new_chunk(),
+        }
+    }
+}
+struct BumpAlloc {
+    len: usize,
+    ptr: *mut u8,
+}
+
+impl BumpAlloc {
+    pub const fn new() -> Self {
+        Self {
+            len: BUMP_CAP,
+            ptr: std::ptr::null_mut(),
+        }
+    }
+    pub fn alloc(&mut self, len: usize) -> &'static mut [MaybeUninit<u8>] {
+        unsafe {
+            if len > SINGLE_BUMP_MAX {
+                let ptr = alloc(Layout::array::<u8>(len).unwrap());
+                return std::slice::from_raw_parts_mut(ptr as *mut MaybeUninit<u8>, len);
+            }
+            if (self.len + len) > BUMP_CAP {
+                self.ptr = new_chunk();
+                self.len = 0;
+            }
+            let ptr = self.ptr.add(self.len);
+            self.len += len;
+            std::slice::from_raw_parts_mut(ptr as *mut MaybeUninit<u8>, len)
+        }
+    }
+    pub fn alloc_slice(&mut self, slice: &[u8]) -> &'static mut [u8] {
+        unsafe {
+            let bytes = self.alloc(slice.len());
+            bytes
+                .as_mut_ptr()
+                .copy_from_nonoverlapping(slice.as_ptr() as *const MaybeUninit<u8>, slice.len());
+            std::mem::transmute(bytes)
+        }
+    }
 }
 
 fn new_chunk() -> *mut u8 {
@@ -41,75 +82,12 @@ fn new_chunk() -> *mut u8 {
     }
 }
 
-impl AtomicBumpAlloc {
-    pub const fn new() -> Self {
-        // This is fine as the offset being at bump capacity will cause the first .alloc call in
-        // any thread to trigger a reallocation
-        AtomicBumpAlloc {
-            len: AtomicUsize::new(BUMP_CAP - 1),
-            ptr: AtomicPtr::new(std::ptr::null_mut()),
-        }
-    }
-    pub fn alloc(&self, len: usize) -> &'static mut [MaybeUninit<u8>] {
-        if len == 0 {
-            return &mut [];
-        }
-
-        if len > SINGLE_BUMP_MAX {
-            unsafe {
-                let ptr = alloc(Layout::array::<u8>(len).unwrap());
-                return std::slice::from_raw_parts_mut(ptr as *mut MaybeUninit<u8>, len);
-            }
-        };
-
-        loop {
-            std::sync::atomic::fence(Ordering::Acquire);
-            let mut offset = self.len.fetch_add(len, Ordering::AcqRel);
-            let mut ptr = self.ptr.load(Ordering::Acquire);
-            std::sync::atomic::fence(Ordering::Release);
-
-            // The idea is that only one thread will ever see the end cross over the BUMP_CAP
-            // threshold, and that thread will be the one responsible for the reallocation
-            let mut end = offset + len;
-
-            if offset >= BUMP_CAP {
-                // Reallocation in progress by another thread, keep polling until it's done
-                continue;
-            }
-
-            if end >= BUMP_CAP {
-                // We need to reallocate
-                ptr = new_chunk();
-                offset = 0;
-                end = len;
-
-                // Our allocation will immediately take the first len bytes
-                self.ptr.store(ptr, Ordering::Release);
-                self.len.store(len, Ordering::Release);
-                std::sync::atomic::fence(Ordering::Release);
-            }
-
-            return unsafe {
-                std::slice::from_raw_parts_mut(ptr.add(offset) as *mut MaybeUninit<u8>, len)
-            };
-        }
-    }
-    pub fn alloc_slice(&self, slice: &[u8]) -> &'static mut [u8] {
-        unsafe {
-            let bytes = self.alloc(slice.len());
-            bytes
-                .as_mut_ptr()
-                .copy_from_nonoverlapping(slice.as_ptr() as *const MaybeUninit<u8>, slice.len());
-            std::mem::transmute(bytes)
-        }
-    }
-}
-
 fn work(
     data: &[u8],
     per_thread: usize,
     thread: usize,
 ) -> Option<HashMap<&'static [u8], MeasurementRecord>> {
+    let mut BUMP = BumpAlloc::default();
     let mut start = per_thread * thread;
     let end = start + per_thread;
 
@@ -223,7 +201,7 @@ fn work(
     Some(map)
 }
 
-static BUMP: AtomicBumpAlloc = AtomicBumpAlloc::new();
+// static BUMP: AtomicBumpAlloc = AtomicBumpAlloc::new();
 
 fn main() -> Result<(), Box<dyn Error>> {
     let threads = std::thread::available_parallelism().unwrap().get();
