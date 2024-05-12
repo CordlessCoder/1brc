@@ -279,7 +279,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     ) in stations
     {
-        let mean = sum / count as i64;
+        let mean = if sum ^ (count as i64) >= 0 {
+            (sum + ((count as i64) / 2)) / (count as i64)
+        } else {
+            (sum - ((count as i64) / 2)) / (count as i64)
+        };
         output.write_all(station)?;
         let min_a = min / 10;
         let min_b = (min.unsigned_abs() % 10) as u8;
