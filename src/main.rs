@@ -261,20 +261,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         fn format_fixed(buf: &mut [u8; 5], n: i64) -> &[u8] {
             let todigit = |n| n as u8 + b'0';
             match n {
-                n @ 100..1000 => {
+                n @ 100..=999 => {
                     buf[0] = todigit(n / 100);
                     buf[1] = todigit(n / 10 % 10);
                     buf[2] = b'.';
                     buf[3] = todigit(n % 10);
                     &buf[0..4]
                 }
-                n @ 0..10 => {
+                n @ 0..=9 => {
                     buf[0] = todigit(n / 10 % 10);
                     buf[1] = b'.';
                     buf[2] = todigit(n % 10);
                     &buf[0..3]
                 }
-                n @ -9..0 => {
+                n @ -9..=-1 => {
                     let n = -n;
                     buf[0] = b'-';
                     buf[1] = todigit(n / 10 % 10);
@@ -282,7 +282,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     buf[3] = todigit(n % 10);
                     &buf[0..4]
                 }
-                n @ -999..-9 => {
+                n @ -999..=-10 => {
                     let n = -n;
                     buf[0] = b'-';
                     buf[1] = todigit(n / 100 % 10);
