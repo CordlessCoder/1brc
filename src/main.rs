@@ -1,15 +1,9 @@
-#![allow(unused)]
 use std::{
     alloc::{alloc, Layout},
     error::Error,
     fs::File,
-    hint::black_box,
     io::{stdout, BufWriter, Write},
     mem::MaybeUninit,
-    ops::RangeBounds,
-    ptr::NonNull,
-    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
-    time::Instant,
 };
 
 use hashbrown::HashMap;
@@ -27,14 +21,6 @@ struct MeasurementRecord {
     max: i64,
 }
 
-impl Default for BumpAlloc {
-    fn default() -> Self {
-        Self {
-            len: 0,
-            ptr: new_chunk(),
-        }
-    }
-}
 struct BumpAlloc {
     len: usize,
     ptr: *mut u8,
@@ -42,14 +28,10 @@ struct BumpAlloc {
 
 impl BumpAlloc {
     #[inline]
-    pub fn new_nonlazy() -> Self {
-        Self::default()
-    }
-    #[inline]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            len: BUMP_CAP,
-            ptr: std::ptr::null_mut(),
+            len: 0,
+            ptr: new_chunk(),
         }
     }
     #[inline]
@@ -97,7 +79,7 @@ fn work(
     per_thread: usize,
     thread: usize,
 ) -> Option<HashMap<&'static [u8], MeasurementRecord>> {
-    let mut bump = BumpAlloc::new_nonlazy();
+    let mut bump = BumpAlloc::new();
     let mut start = per_thread * thread;
     let end = start + per_thread;
 
@@ -127,8 +109,7 @@ fn work(
     let mut handle_entry = |station: &[u8], value: i64| {
         // let station: &'static [u8] =
         // _ = unsafe { dbg!(std::str::from_utf8_unchecked(station), value) };
-        let (_, record) = map
-            .raw_entry_mut()
+        map.raw_entry_mut()
             .from_key(station)
             .and_modify(|_, rec| {
                 rec.count += 1;
@@ -242,8 +223,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             if let Some(map) = map.as_mut() {
                 if let Some(res) = res {
                     res.into_iter().for_each(|(station, data)| {
-                        let rec = map
-                            .entry(station)
+                        map.entry(station)
                             .and_modify(|rec| {
                                 rec.count += data.count;
                                 rec.sum += data.sum;
@@ -278,13 +258,63 @@ fn main() -> Result<(), Box<dyn Error>> {
             (sum - ((count as i64) / 2)) / (count as i64)
         };
         output.write_all(station)?;
-        let min_a = min / 10;
-        let min_b = (min.unsigned_abs() % 10) as u8;
-        let mean_a = mean / 10;
-        let mean_b = (mean.unsigned_abs() % 10) as u8;
-        let max_a = max / 10;
-        let max_b = (max.unsigned_abs() % 10) as u8;
-        writeln!(output, ";{min_a}.{min_b};{mean_a}.{mean_b};{max_a}.{max_b}")?;
+        fn format_fixed(buf: &mut [u8; 5], n: i64) -> &[u8] {
+            let todigit = |n| n as u8 + b'0';
+            match n {
+                n @ 100..1000 => {
+                    buf[0] = todigit(n / 100);
+                    buf[1] = todigit(n / 10 % 10);
+                    buf[2] = b'.';
+                    buf[3] = todigit(n % 10);
+                    &buf[0..4]
+                }
+                n @ 0..10 => {
+                    buf[0] = todigit(n / 10 % 10);
+                    buf[1] = b'.';
+                    buf[2] = todigit(n % 10);
+                    &buf[0..3]
+                }
+                n @ -9..0 => {
+                    let n = -n;
+                    buf[0] = b'-';
+                    buf[1] = todigit(n / 10 % 10);
+                    buf[2] = b'.';
+                    buf[3] = todigit(n % 10);
+                    &buf[0..4]
+                }
+                n @ -999..-9 => {
+                    let n = -n;
+                    buf[0] = b'-';
+                    buf[1] = todigit(n / 100 % 10);
+                    buf[2] = todigit(n / 10 % 10);
+                    buf[3] = b'.';
+                    buf[4] = todigit(n % 10);
+                    &buf[0..5]
+                }
+                _ => {
+                    #[cfg(debug_assertions)]
+                    unreachable!("All fixed-precision numbers should be in the range -999..=999");
+                    #[cfg(not(debug_assertions))]
+                    unsafe {
+                        std::hint::unreachable_unchecked()
+                    };
+                }
+            }
+        }
+        let mut buf = [0; 5];
+        _ = output.write(b";")?;
+
+        let min = format_fixed(&mut buf, min);
+        output.write_all(min)?;
+        _ = output.write(b";")?;
+
+        let mean = format_fixed(&mut buf, mean);
+        output.write_all(mean)?;
+        _ = output.write(b";")?;
+
+        let max = format_fixed(&mut buf, max);
+        output.write_all(max)?;
+        _ = output.write(b"\n")?;
     }
     Ok(())
 }
