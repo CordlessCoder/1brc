@@ -6,14 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bstr = "1.9.0"
-fast-float = "0.2.0"
-memchr = "2.7.1"
-memmap = "0.7.0"
-rayon = "1.8.0"
-rustc-hash = "1.1.0"
-smol_str = "0.2.0"
+memmap2 = "0.9.4"
+hashbrown = "0.14.5"
 
 [profile.release]
 lto = "fat"
 codegen-units = 1
+panic = "abort"
