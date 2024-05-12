@@ -41,12 +41,18 @@ struct BumpAlloc {
 }
 
 impl BumpAlloc {
+    #[inline]
+    pub fn new_nonlazy() -> Self {
+        Self::default()
+    }
+    #[inline]
     pub const fn new() -> Self {
         Self {
             len: BUMP_CAP,
             ptr: std::ptr::null_mut(),
         }
     }
+    #[inline]
     pub fn alloc(&mut self, len: usize) -> &'static mut [MaybeUninit<u8>] {
         unsafe {
             // // SAFETY: Technically required for the case where the length wouldn't fit in the
@@ -91,7 +97,7 @@ fn work(
     per_thread: usize,
     thread: usize,
 ) -> Option<HashMap<&'static [u8], MeasurementRecord>> {
-    let mut bump = BumpAlloc::default();
+    let mut bump = BumpAlloc::new_nonlazy();
     let mut start = per_thread * thread;
     let end = start + per_thread;
 
