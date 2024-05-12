@@ -268,7 +268,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     buf[3] = todigit(n % 10);
                     &buf[0..4]
                 }
-                n @ 0..=9 => {
+                n @ 0..=99 => {
                     buf[0] = todigit(n / 10 % 10);
                     buf[1] = b'.';
                     buf[2] = todigit(n % 10);
@@ -291,7 +291,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     buf[4] = todigit(n % 10);
                     &buf[0..5]
                 }
-                _ => {
+                i64::MIN..=-1000 | 1000..=i64::MAX => {
                     #[cfg(debug_assertions)]
                     unreachable!("All fixed-precision numbers should be in the range -999..=999");
                     #[cfg(not(debug_assertions))]
