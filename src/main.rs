@@ -9,7 +9,7 @@ use std::{
 use hashbrown::HashMap;
 use memmap2::Mmap;
 
-const BUMP_CAP: usize = 1024 * 1024 * 4;
+const BUMP_CAP: usize = 1024 * 1024;
 const _: () = assert!(BUMP_CAP > 1024);
 // const SINGLE_BUMP_MAX: usize = 1024;
 
