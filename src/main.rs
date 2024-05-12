@@ -241,7 +241,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     let mut stations: Vec<_> = map.into_iter().collect();
     stations.sort_unstable_by_key(|&(s, _)| s);
-    let mut output = BufWriter::with_capacity(1024 * 1024, stdout().lock());
+    let mut output = BufWriter::with_capacity(1024 * 512, stdout().lock());
     for (
         station,
         MeasurementRecord {
