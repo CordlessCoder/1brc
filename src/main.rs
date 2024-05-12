@@ -274,7 +274,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     buf[2] = todigit(n % 10);
                     &buf[0..3]
                 }
-                n @ -9..=-1 => {
+                n @ -99..=-1 => {
                     let n = -n;
                     buf[0] = b'-';
                     buf[1] = todigit(n / 10 % 10);
@@ -282,7 +282,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     buf[3] = todigit(n % 10);
                     &buf[0..4]
                 }
-                n @ -999..=-10 => {
+                n @ -999..=-100 => {
                     let n = -n;
                     buf[0] = b'-';
                     buf[1] = todigit(n / 100 % 10);
