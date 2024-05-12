@@ -105,7 +105,7 @@ fn work(
 
     // _ = unsafe { dbg!(thread, std::str::from_utf8_unchecked(data)) };
 
-    let mut map: HashMap<&[u8], MeasurementRecord> = HashMap::new();
+    let mut map: HashMap<&[u8], MeasurementRecord> = HashMap::with_capacity(1024 * 10);
     let mut handle_entry = |station: &[u8], value: i64| {
         // let station: &'static [u8] =
         // _ = unsafe { dbg!(std::str::from_utf8_unchecked(station), value) };
