@@ -16,7 +16,8 @@ use hashbrown::HashMap;
 use memmap2::Mmap;
 
 const BUMP_CAP: usize = 1024 * 1024 * 4;
-const SINGLE_BUMP_MAX: usize = 1024;
+const _: () = assert!(BUMP_CAP > 1024);
+// const SINGLE_BUMP_MAX: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MeasurementRecord {
@@ -48,10 +49,13 @@ impl BumpAlloc {
     }
     pub fn alloc(&mut self, len: usize) -> &'static mut [MaybeUninit<u8>] {
         unsafe {
-            if len > SINGLE_BUMP_MAX {
-                let ptr = alloc(Layout::array::<u8>(len).unwrap());
-                return std::slice::from_raw_parts_mut(ptr as *mut MaybeUninit<u8>, len);
-            }
+            // // SAFETY: Technically required for the case where the length wouldn't fit in the
+            // // backing buffer, but we know all stations will be under than 100 bytes
+            //
+            // if len > SINGLE_BUMP_MAX {
+            //     let ptr = alloc(Layout::array::<u8>(len).unwrap());
+            //     return std::slice::from_raw_parts_mut(ptr as *mut MaybeUninit<u8>, len);
+            // }
             if (self.len + len) > BUMP_CAP {
                 self.ptr = new_chunk();
                 self.len = 0;
@@ -87,7 +91,7 @@ fn work(
     per_thread: usize,
     thread: usize,
 ) -> Option<HashMap<&'static [u8], MeasurementRecord>> {
-    let mut BUMP = BumpAlloc::default();
+    let mut bump = BumpAlloc::default();
     let mut start = per_thread * thread;
     let end = start + per_thread;
 
@@ -128,7 +132,7 @@ fn work(
             })
             .or_insert_with(|| {
                 (
-                    BUMP.alloc_slice(station),
+                    bump.alloc_slice(station),
                     MeasurementRecord {
                         count: 1,
                         sum: value,
@@ -146,8 +150,15 @@ fn work(
         #[cfg(not(debug_assertions))]
         let semicolon = unsafe { semicolon.unwrap_unchecked() };
 
+        #[cfg(debug_assertions)]
         let station = &data[..semicolon];
-        data = &data[semicolon + 1..];
+        #[cfg(not(debug_assertions))]
+        let station = unsafe { data.get_unchecked(..semicolon) };
+        #[cfg(debug_assertions)]
+        let rem = &data[semicolon + 1..];
+        #[cfg(not(debug_assertions))]
+        let rem = unsafe { data.get_unchecked(semicolon + 1..) };
+        data = rem;
 
         let dot = data.iter().position(|&b| b == b'.');
         #[cfg(debug_assertions)]
@@ -200,8 +211,6 @@ fn work(
     }
     Some(map)
 }
-
-// static BUMP: AtomicBumpAlloc = AtomicBumpAlloc::new();
 
 fn main() -> Result<(), Box<dyn Error>> {
     let threads = std::thread::available_parallelism().unwrap().get();
