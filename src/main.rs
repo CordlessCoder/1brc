@@ -22,8 +22,8 @@ type Map<K, V> = HashMap<K, V>;
 struct MeasurementRecord {
     count: usize,
     sum: i64,
-    min: i64,
-    max: i64,
+    min: i16,
+    max: i16,
 }
 
 struct BumpAlloc {
@@ -113,14 +113,14 @@ fn work(data: &[u8], cursor: &AtomicUsize) -> Map<&'static [u8], MeasurementReco
 
         // _ = unsafe { dbg!(thread, std::str::from_utf8_unchecked(data)) };
 
-        let mut handle_entry = |station: &[u8], value: i64| {
+        let mut handle_entry = |station: &[u8], value: i16| {
             // let station: &'static [u8] =
             // _ = unsafe { dbg!(std::str::from_utf8_unchecked(station), value) };
             map.raw_entry_mut()
                 .from_key(station)
                 .and_modify(|_, rec| {
                     rec.count += 1;
-                    rec.sum += value;
+                    rec.sum += value as i64;
                     rec.min = rec.min.min(value);
                     rec.max = rec.max.max(value);
                 })
@@ -129,7 +129,7 @@ fn work(data: &[u8], cursor: &AtomicUsize) -> Map<&'static [u8], MeasurementReco
                         bump.alloc_slice(station),
                         MeasurementRecord {
                             count: 1,
-                            sum: value,
+                            sum: value as i64,
                             min: value,
                             max: value,
                         },
@@ -171,23 +171,23 @@ fn work(data: &[u8], cursor: &AtomicUsize) -> Map<&'static [u8], MeasurementReco
 
             let value = match before_dot.len() {
                 1 => {
-                    before_dot[0].wrapping_sub(b'0') as i64 * 10
-                        + after_dot.wrapping_sub(b'0') as i64
+                    before_dot[0].wrapping_sub(b'0') as i16 * 10
+                        + after_dot.wrapping_sub(b'0') as i16
                 }
                 2 => {
                     if before_dot[0] == b'-' {
-                        -(before_dot[1].wrapping_sub(b'0') as i64) * 10
-                            - after_dot.wrapping_sub(b'0') as i64
+                        -(before_dot[1].wrapping_sub(b'0') as i16) * 10
+                            - after_dot.wrapping_sub(b'0') as i16
                     } else {
-                        (before_dot[0].wrapping_sub(b'0') as i64 * 100)
-                            + (before_dot[1].wrapping_sub(b'0') as i64 * 10)
-                            + after_dot.wrapping_sub(b'0') as i64
+                        (before_dot[0].wrapping_sub(b'0') as i16 * 100)
+                            + (before_dot[1].wrapping_sub(b'0') as i16 * 10)
+                            + after_dot.wrapping_sub(b'0') as i16
                     }
                 }
                 3 => {
-                    -(before_dot[1].wrapping_sub(b'0') as i64 * 100
-                        + before_dot[2].wrapping_sub(b'0') as i64 * 10
-                        + after_dot.wrapping_sub(b'0') as i64)
+                    -(before_dot[1].wrapping_sub(b'0') as i16 * 100
+                        + before_dot[2].wrapping_sub(b'0') as i16 * 10
+                        + after_dot.wrapping_sub(b'0') as i16)
                 }
                 _ => {
                     #[cfg(debug_assertions)]
@@ -224,8 +224,9 @@ fn work(data: &[u8], cursor: &AtomicUsize) -> Map<&'static [u8], MeasurementReco
 fn main() -> Result<(), Box<dyn Error>> {
     let threads = std::thread::available_parallelism().unwrap().get();
 
-    let path = std::env::args().nth(1);
-    let path = path.as_deref().unwrap_or("measurements.txt");
+    // let path = std::env::args().nth(1);
+    // let path = path.as_deref().unwrap_or("measurements.txt");
+    let path = "measurements.txt";
 
     let file = File::open(path).unwrap();
     let data = unsafe { Mmap::map(&file).unwrap() };
@@ -321,7 +322,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut buf = [0; 5];
         _ = output.write(b";")?;
 
-        let min = format_fixed(&mut buf, min);
+        let min = format_fixed(&mut buf, min as i64);
         output.write_all(min)?;
         _ = output.write(b";")?;
 
@@ -329,7 +330,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         output.write_all(mean)?;
         _ = output.write(b";")?;
 
-        let max = format_fixed(&mut buf, max);
+        let max = format_fixed(&mut buf, max as i64);
         output.write_all(max)?;
         _ = output.write(b"\n")?;
     }
