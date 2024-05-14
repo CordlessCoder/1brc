@@ -4,6 +4,7 @@ use std::{
     fs::File,
     io::{stdout, BufWriter, Write},
     mem::MaybeUninit,
+    sync::atomic::AtomicUsize,
 };
 
 use hashbrown::HashMap;
@@ -12,6 +13,10 @@ use memmap2::Mmap;
 const BUMP_CAP: usize = 1024 * 1024;
 const _: () = assert!(BUMP_CAP > 1024);
 // const SINGLE_BUMP_MAX: usize = 1024;
+
+const WORK_CHUNK: usize = 1024 * 1024 * 2;
+
+type Map<K, V> = HashMap<K, V>;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MeasurementRecord {
@@ -38,7 +43,7 @@ impl BumpAlloc {
     pub fn alloc(&mut self, len: usize) -> &'static mut [MaybeUninit<u8>] {
         unsafe {
             // // SAFETY: Technically required for the case where the length wouldn't fit in the
-            // // backing buffer, but we know all stations will be under than 100 bytes
+            // // backing buffer, but we know all stations will be under 100 bytes
             //
             // if len > SINGLE_BUMP_MAX {
             //     let ptr = alloc(Layout::array::<u8>(len).unwrap());
@@ -74,129 +79,146 @@ fn new_chunk() -> *mut u8 {
     }
 }
 
-fn work(
-    data: &[u8],
-    per_thread: usize,
-    thread: usize,
-) -> Option<HashMap<&'static [u8], MeasurementRecord>> {
-    let mut bump = BumpAlloc::new();
-    let mut start = per_thread * thread;
-    let end = start + per_thread;
-
-    if start != 0 {
-        let (first_newline, _) = data
+fn work(data: &[u8], cursor: &AtomicUsize) -> Map<&'static [u8], MeasurementRecord> {
+    #[inline(always)]
+    fn process_chunk(
+        data: &[u8],
+        mut start: usize,
+        end: usize,
+        map: &mut Map<&'static [u8], MeasurementRecord>,
+    ) {
+        let mut bump = BumpAlloc::new();
+        if start != 0 {
+            let Some((first_newline, _)) = data
+                .iter()
+                .enumerate()
+                .take(end)
+                .skip(start)
+                .find(|(_, &b)| b == b'\n')
+            else {
+                return;
+            };
+            // the +1 is necessary to skip the first newline
+            start = first_newline + 1;
+        }
+        let end = data
             .iter()
             .enumerate()
-            .skip(start)
-            .take(per_thread)
-            .find(|(_, &b)| b == b'\n')?;
-        // the +1 is necessary to skip the first newline
-        start = first_newline + 1;
-    }
-    let end = data
-        .iter()
-        .enumerate()
-        .skip(end)
-        .find(|(_, &b)| b == b'\n')
-        .map(|(end, _)| end)
-        .unwrap_or(data.len());
+            .skip(end)
+            .find(|(_, &b)| b == b'\n')
+            .map(|(end, _)| end)
+            .unwrap_or(data.len());
 
-    let mut data = &data[start..end];
+        let mut data = &data[start..end];
 
-    // _ = unsafe { dbg!(thread, std::str::from_utf8_unchecked(data)) };
+        // _ = unsafe { dbg!(thread, std::str::from_utf8_unchecked(data)) };
 
-    let mut map: HashMap<&[u8], MeasurementRecord> = HashMap::with_capacity(1024 * 10);
-    let mut handle_entry = |station: &[u8], value: i64| {
-        // let station: &'static [u8] =
-        // _ = unsafe { dbg!(std::str::from_utf8_unchecked(station), value) };
-        map.raw_entry_mut()
-            .from_key(station)
-            .and_modify(|_, rec| {
-                rec.count += 1;
-                rec.sum += value;
-                rec.min = rec.min.min(value);
-                rec.max = rec.max.max(value);
-            })
-            .or_insert_with(|| {
-                (
-                    bump.alloc_slice(station),
-                    MeasurementRecord {
-                        count: 1,
-                        sum: value,
-                        min: value,
-                        max: value,
-                    },
-                )
-            });
-    };
-    while !data.is_empty() {
-        // Hamburg;12.0...
-        let semicolon = data.iter().position(|&b| b == b';');
-        #[cfg(debug_assertions)]
-        let semicolon = semicolon.unwrap();
-        #[cfg(not(debug_assertions))]
-        let semicolon = unsafe { semicolon.unwrap_unchecked() };
+        let mut handle_entry = |station: &[u8], value: i64| {
+            // let station: &'static [u8] =
+            // _ = unsafe { dbg!(std::str::from_utf8_unchecked(station), value) };
+            map.raw_entry_mut()
+                .from_key(station)
+                .and_modify(|_, rec| {
+                    rec.count += 1;
+                    rec.sum += value;
+                    rec.min = rec.min.min(value);
+                    rec.max = rec.max.max(value);
+                })
+                .or_insert_with(|| {
+                    (
+                        bump.alloc_slice(station),
+                        MeasurementRecord {
+                            count: 1,
+                            sum: value,
+                            min: value,
+                            max: value,
+                        },
+                    )
+                });
+        };
+        while !data.is_empty() {
+            // Hamburg;12.0...
+            let semicolon = data.iter().position(|&b| b == b';');
+            #[cfg(debug_assertions)]
+            let semicolon = semicolon.unwrap();
+            #[cfg(not(debug_assertions))]
+            let semicolon = unsafe { semicolon.unwrap_unchecked() };
 
-        #[cfg(debug_assertions)]
-        let station = &data[..semicolon];
-        #[cfg(not(debug_assertions))]
-        let station = unsafe { data.get_unchecked(..semicolon) };
-        #[cfg(debug_assertions)]
-        let rem = &data[semicolon + 1..];
-        #[cfg(not(debug_assertions))]
-        let rem = unsafe { data.get_unchecked(semicolon + 1..) };
-        data = rem;
+            #[cfg(debug_assertions)]
+            let station = &data[..semicolon];
+            #[cfg(not(debug_assertions))]
+            let station = unsafe { data.get_unchecked(..semicolon) };
+            #[cfg(debug_assertions)]
+            let rem = &data[semicolon + 1..];
+            #[cfg(not(debug_assertions))]
+            let rem = unsafe { data.get_unchecked(semicolon + 1..) };
+            data = rem;
 
-        let dot = data.iter().position(|&b| b == b'.');
-        #[cfg(debug_assertions)]
-        let dot = dot.unwrap();
-        #[cfg(not(debug_assertions))]
-        let dot = unsafe { dot.unwrap_unchecked() };
+            let dot = data.iter().position(|&b| b == b'.');
+            #[cfg(debug_assertions)]
+            let dot = dot.unwrap();
+            #[cfg(not(debug_assertions))]
+            let dot = unsafe { dot.unwrap_unchecked() };
 
-        #[cfg(debug_assertions)]
-        let before_dot = &data[..dot];
-        #[cfg(not(debug_assertions))]
-        let before_dot = unsafe { data.get_unchecked(..dot) };
-        #[cfg(debug_assertions)]
-        let after_dot = data[dot + 1];
-        #[cfg(not(debug_assertions))]
-        let after_dot = unsafe { data.get_unchecked(dot + 1) };
+            #[cfg(debug_assertions)]
+            let before_dot = &data[..dot];
+            #[cfg(not(debug_assertions))]
+            let before_dot = unsafe { data.get_unchecked(..dot) };
+            #[cfg(debug_assertions)]
+            let after_dot = data[dot + 1];
+            #[cfg(not(debug_assertions))]
+            let after_dot = unsafe { data.get_unchecked(dot + 1) };
 
-        let value = match before_dot.len() {
-            1 => before_dot[0].wrapping_sub(b'0') as i64 * 10 + after_dot.wrapping_sub(b'0') as i64,
-            2 => {
-                if before_dot[0] == b'-' {
-                    -(before_dot[1].wrapping_sub(b'0') as i64) * 10
-                        - after_dot.wrapping_sub(b'0') as i64
-                } else {
-                    (before_dot[0].wrapping_sub(b'0') as i64 * 100)
-                        + (before_dot[1].wrapping_sub(b'0') as i64 * 10)
+            let value = match before_dot.len() {
+                1 => {
+                    before_dot[0].wrapping_sub(b'0') as i64 * 10
                         + after_dot.wrapping_sub(b'0') as i64
                 }
-            }
-            3 => {
-                -(before_dot[1].wrapping_sub(b'0') as i64 * 100
-                    + before_dot[2].wrapping_sub(b'0') as i64 * 10
-                    + after_dot.wrapping_sub(b'0') as i64)
-            }
-            _ => {
-                #[cfg(debug_assertions)]
-                unreachable!();
-                #[cfg(not(debug_assertions))]
-                unsafe {
-                    std::hint::unreachable_unchecked()
-                };
-            }
-        };
+                2 => {
+                    if before_dot[0] == b'-' {
+                        -(before_dot[1].wrapping_sub(b'0') as i64) * 10
+                            - after_dot.wrapping_sub(b'0') as i64
+                    } else {
+                        (before_dot[0].wrapping_sub(b'0') as i64 * 100)
+                            + (before_dot[1].wrapping_sub(b'0') as i64 * 10)
+                            + after_dot.wrapping_sub(b'0') as i64
+                    }
+                }
+                3 => {
+                    -(before_dot[1].wrapping_sub(b'0') as i64 * 100
+                        + before_dot[2].wrapping_sub(b'0') as i64 * 10
+                        + after_dot.wrapping_sub(b'0') as i64)
+                }
+                _ => {
+                    #[cfg(debug_assertions)]
+                    unreachable!();
+                    #[cfg(not(debug_assertions))]
+                    unsafe {
+                        std::hint::unreachable_unchecked()
+                    };
+                }
+            };
 
-        handle_entry(station, value);
+            handle_entry(station, value);
 
-        let Some(remainder) = data.get(dot + 3..) else {
-            break;
-        };
-        data = remainder;
+            let Some(remainder) = data.get(dot + 3..) else {
+                break;
+            };
+            data = remainder;
+        }
     }
-    Some(map)
+
+    let mut map: Map<&[u8], MeasurementRecord> = Map::with_capacity(1024 * 8);
+    loop {
+        let offset = cursor.fetch_add(WORK_CHUNK, std::sync::atomic::Ordering::Release);
+        let end = offset + WORK_CHUNK;
+        let end = end.min(data.len());
+        if offset >= data.len() {
+            break;
+        }
+        process_chunk(data, offset, end, &mut map)
+    }
+    map
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -209,35 +231,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     let data = unsafe { Mmap::map(&file).unwrap() };
     let data = &data[..];
 
-    let per_thread = (data.len() + threads - 1) / threads;
+    let cursor = AtomicUsize::new(0);
 
     let map = std::thread::scope(|s| {
         let mut handles = Vec::with_capacity(threads);
-        for thread in 1..threads {
-            let thread = s.spawn(move || work(data, per_thread, thread));
+        let cursor = &cursor;
+        for _ in 1..threads {
+            let thread = s.spawn(move || work(data, cursor));
             handles.push(thread);
         }
-        let mut map = work(data, per_thread, 0);
+        let mut map = work(data, cursor);
         handles.into_iter().for_each(|h| {
             let res = h.join().unwrap();
-            if let Some(map) = map.as_mut() {
-                if let Some(res) = res {
-                    res.into_iter().for_each(|(station, data)| {
-                        map.entry(station)
-                            .and_modify(|rec| {
-                                rec.count += data.count;
-                                rec.sum += data.sum;
-                                rec.max = rec.max.max(data.max);
-                                rec.min = rec.min.min(data.min);
-                            })
-                            .or_insert(data);
+            res.into_iter().for_each(|(station, data)| {
+                map.entry(station)
+                    .and_modify(|rec| {
+                        rec.count += data.count;
+                        rec.sum += data.sum;
+                        rec.max = rec.max.max(data.max);
+                        rec.min = rec.min.min(data.min);
                     })
-                }
-            } else {
-                map = res;
-            }
+                    .or_insert(data);
+            })
         });
-        map.unwrap_or_default()
+        map
     });
     let mut stations: Vec<_> = map.into_iter().collect();
     stations.sort_unstable_by_key(|&(s, _)| s);
